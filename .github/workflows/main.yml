@@ -1,0 +1,92 @@
+name: Release Handler
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "main.lua"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version.txt as tag
+        id: version
+        shell: bash
+        run: |
+          if [ ! -f version.txt ]; then
+            echo "version.txt not found at repo root" >&2
+            exit 1
+          fi
+
+          TAG="$(cat version.txt)"
+          TAG="$(printf '%s' "$TAG" | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
+
+          if [ -z "$TAG" ]; then
+            echo "version.txt is empty after trimming" >&2
+            exit 1
+          fi
+
+          if printf '%s' "$TAG" | grep -q '[[:space:]]'; then
+            echo "Tag contains whitespace. version.txt must be a single token like v1.2.3" >&2
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure git tag exists (create if missing)
+        shell: bash
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Git tag already exists: $TAG"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Ensure GitHub Release exists (create if missing)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub Release already exists for tag: $TAG"
+            exit 0
+          fi
+
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes
+
+      - name: Upload or overwrite main.lua on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+
+          if [ ! -f main.lua ]; then
+            echo "main.lua not found" >&2
+            exit 1
+          fi
+
+          # Overwrite asset if it already exists
+          gh release upload "$TAG" main.lua --clobber
